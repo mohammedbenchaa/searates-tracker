@@ -75,6 +75,7 @@ class SeaRatesClient:
             "Accept-Language": language,
             "Origin": "https://www.searates.com",
             "Referer": "https://www.searates.com/container/tracking",
+            "X-Referer": "https://www.searates.com/",
         })
         if api_key:
             self._session.headers["Authorization"] = f"Bearer {api_key}"
