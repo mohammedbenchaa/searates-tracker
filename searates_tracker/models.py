@@ -163,22 +163,102 @@ class SeaTrackingResult(TrackingResult):
         data = response.get("data", {})
         metadata = data.get("metadata", {})
 
+        # Locations lookup
+        locations = {loc["id"]: loc for loc in data.get("locations", [])}
+        facilities = {f["id"]: f for f in data.get("facilities", [])}
+
+        # Extract vessels
+        raw_vessels = data.get("vessels", [])
+        vessels_list = [
+            Vessel(name=v.get("name"), imo=str(v.get("imo", "")))
+            for v in raw_vessels
+        ]
+
+        # Extract events from containers
+        containers = data.get("containers", [])
+        events_list = []
+        for cont in containers:
+            for evt in cont.get("events", []):
+                loc = locations.get(evt.get("location"))
+                fac = facilities.get(evt.get("facility"))
+                vessel = None
+                vessel_id = evt.get("vessel")
+                if vessel_id and raw_vessels:
+                    for v in raw_vessels:
+                        if v.get("id") == vessel_id:
+                            vessel = v.get("name")
+                            break
+
+                location_str = None
+                if loc:
+                    parts = [loc.get("name", "")]
+                    if loc.get("country"):
+                        parts.append(loc.get("country"))
+                    location_str = ", ".join(parts)
+                elif fac:
+                    location_str = fac.get("name")
+
+                events_list.append(TrackingEvent(
+                    date=evt.get("date"),
+                    actual=evt.get("actual"),
+                    event=evt.get("description"),
+                    location=location_str,
+                    vessel=vessel,
+                    voyage=evt.get("voyage"),
+                    mode=evt.get("type"),
+                    transport_type=evt.get("transport_type"),
+                    order_id=evt.get("order_id"),
+                    event_code=evt.get("event_code"),
+                    _raw=evt,
+                ))
+
+        # Extract routes
+        route_data = data.get("route_data", {})
+        raw_routes = route_data.get("route", [])
+        routes_list = []
+        for r in raw_routes:
+            fr = r.get("from", {})
+            to = r.get("to", {})
+            routes_list.append(RoutePoint(
+                from_name=fr.get("name"),
+                from_country=fr.get("country"),
+                from_locode=fr.get("locode"),
+                to_name=to.get("name"),
+                to_country=to.get("country"),
+                to_locode=to.get("locode"),
+                path=r.get("path"),
+                _raw=r,
+            ))
+
+        # Direction
+        if routes_list:
+            direction_from = f"{routes_list[0].from_name}, {routes_list[0].from_country}"
+            direction_to = f"{routes_list[-1].to_name}, {routes_list[-1].to_country}"
+        else:
+            direction_from = None
+            direction_to = None
+
+        # Route timing from route object
+        route_obj = data.get("route", {})
+        pol = route_obj.get("pol", {})
+        pod = route_obj.get("pod", {})
+
         return cls(
             **base.__dict__,
-            direction_from=data.get("direction_from"),
-            direction_to=data.get("direction_to"),
+            direction_from=direction_from,
+            direction_to=direction_to,
             sealine=metadata.get("sealine"),
             sealine_name=metadata.get("sealine_name"),
             from_cache=metadata.get("from_cache", False),
-            atd=data.get("atd"),
-            etd=data.get("etd"),
-            ata=data.get("ata"),
-            eta=data.get("eta"),
-            progress=data.get("progress"),
-            containers=[Container.from_api(c) for c in data.get("containers", [])],
-            events=[TrackingEvent.from_api(e) for e in data.get("events", [])],
-            routes=[RoutePoint.from_api(r) for r in data.get("routes", [])],
-            vessels=[Vessel.from_api(v) for v in data.get("vessels", [])],
+            atd=pol.get("date") if pol.get("actual") else None,
+            etd=pol.get("date"),
+            ata=pod.get("date") if pod.get("actual") else None,
+            eta=pod.get("date"),
+            progress=None,  # Not in raw API; will be computed
+            containers=[Container.from_api(c) for c in containers],
+            events=events_list,
+            routes=routes_list,
+            vessels=vessels_list,
         )
 
 
