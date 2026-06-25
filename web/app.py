@@ -5,7 +5,7 @@ Flask web application for container tracking with interactive map.
 
 Run:
     python app.py
-    # → http://localhost:5000
+    # → http://0.0.0.0:8787/tracking
 """
 
 import sys
@@ -14,7 +14,7 @@ from pathlib import Path
 # Add parent directory to path so we can import searates_tracker
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Blueprint
 
 from searates_tracker import SeaRatesClient
 from searates_tracker.exceptions import (
@@ -23,17 +23,20 @@ from searates_tracker.exceptions import (
     SeaRatesRateLimitError,
 )
 
+# Create blueprint with /tracking prefix
+tracking_bp = Blueprint("tracking", __name__, url_prefix="/tracking")
+
 app = Flask(__name__)
 client = SeaRatesClient()
 
 
-@app.route("/")
+@tracking_bp.route("/")
 def index():
     """Main page."""
     return render_template("index.html")
 
 
-@app.route("/api/track", methods=["POST"])
+@tracking_bp.route("/api/track", methods=["POST"])
 def track():
     """Track a container/shipment."""
     data = request.get_json() or {}
@@ -169,7 +172,7 @@ def track():
         return jsonify({"success": False, "error": f"خطأ غير متوقع: {str(e)}"}), 500
 
 
-@app.route("/api/carriers", methods=["GET"])
+@tracking_bp.route("/api/carriers", methods=["GET"])
 def get_carriers():
     """List shipping carriers."""
     query = request.args.get("q", "").strip()
@@ -198,11 +201,24 @@ def get_carriers():
     })
 
 
+# Register blueprint
+app.register_blueprint(tracking_bp)
+
+
+# Also serve at root for convenience
+@app.route("/")
+@app.route("/tracking")
+def root_redirect():
+    """Redirect to tracking page."""
+    return render_template("index.html")
+
+
 if __name__ == "__main__":
     print("🚢 SeaRates Tracker Web App")
     print("=" * 40)
-    print("🌐 http://localhost:5000")
-    print("📋 /api/track — تتبع شحنة (POST)")
-    print("📋 /api/carriers — قائمة الناقلين (GET)")
+    print("🌐 http://0.0.0.0:5050/tracking")
+    print("📋 /tracking/api/track — تتبع شحنة (POST)")
+    print("📋 /tracking/api/carriers — قائمة الناقلين (GET)")
     print("=" * 40)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    
+    app.run(host="0.0.0.0", port=5050, debug=False)

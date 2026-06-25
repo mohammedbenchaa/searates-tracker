@@ -4,7 +4,11 @@ Core SeaRates API client.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -62,10 +66,15 @@ class SeaRatesClient:
         api_key: str | None = None,
         timeout: int = 30,
         language: str = "en",
+        cache_ttl: int = 86400,  # 24 hours in seconds
+        cache_dir: str | None = None,
     ):
         self.api_key = api_key
         self.timeout = timeout
         self.language = language
+        self.cache_ttl = cache_ttl  # 0 = disable cache
+        self._cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".searates_cache"
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": (
@@ -79,6 +88,57 @@ class SeaRatesClient:
         })
         if api_key:
             self._session.headers["Authorization"] = f"Bearer {api_key}"
+
+    # ------------------------------------------------------------------
+    # 💾 Cache helpers
+    # ------------------------------------------------------------------
+
+    def _cache_key(self, prefix: str, **params) -> str:
+        """Generate a cache key from prefix and sorted params."""
+        raw = prefix + json.dumps(params, sort_keys=True)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def _cache_get(self, key: str) -> dict | None:
+        """Get cached response if valid."""
+        if not self.cache_ttl:
+            return None
+        cache_file = self._cache_dir / f"{key}.json"
+        if not cache_file.exists():
+            return None
+        try:
+            data = json.loads(cache_file.read_text())
+            if time.time() - data.get("_cached_at", 0) < self.cache_ttl:
+                logger.debug("Cache HIT for %s (age: %.0fs)", key, time.time() - data["_cached_at"])
+                return data
+            cache_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+    def _cache_set(self, key: str, data: dict) -> None:
+        """Store response in cache."""
+        if not self.cache_ttl:
+            return
+        data["_cached_at"] = time.time()
+        cache_file = self._cache_dir / f"{key}.json"
+        try:
+            cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
+        except Exception:
+            pass
+
+    def clear_cache(self, older_than: int = 0) -> int:
+        """Clear cached entries. Returns number of files removed."""
+        count = 0
+        now = time.time()
+        for f in self._cache_dir.glob("*.json"):
+            try:
+                if older_than and now - f.stat().st_mtime < older_than:
+                    continue
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+        return count
 
     # ------------------------------------------------------------------
     # 🚢 Sea / Container Tracking
@@ -117,8 +177,19 @@ class SeaRatesClient:
         if tracking_type:
             params["type"] = tracking_type
 
+        # Check cache first
+        cache_key = self._cache_key("sea", **params)
+        cached = self._cache_get(cache_key)
+        if cached:
+            return SeaTrackingResult.from_api_response(cached)
+
         response = self._get(f"{BASE_WWW}/reverse/tracking", params=params)
         self._raise_for_error(response)
+        
+        # Cache successful responses
+        if response.get("status") == "success":
+            self._cache_set(cache_key, response)
+        
         return SeaTrackingResult.from_api_response(response)
 
     # ------------------------------------------------------------------
@@ -142,8 +213,16 @@ class SeaRatesClient:
             "number": number,
             "last_successful": "false",
         }
+        # Check cache
+        cache_key = self._cache_key("air", **params)
+        cached = self._cache_get(cache_key)
+        if cached:
+            return AirTrackingResult.from_api_response(cached)
+
         response = self._get(f"{BASE_WWW}/air", params=params)
         self._raise_for_error(response)
+        if response.get("status") == "success":
+            self._cache_set(cache_key, response)
         return AirTrackingResult.from_api_response(response)
 
     # ------------------------------------------------------------------
@@ -170,7 +249,14 @@ class SeaRatesClient:
             "path": "true",
             "number": number,
         }
+        cache_key = self._cache_key("parcel", **params)
+        cached = self._cache_get(cache_key)
+        if cached:
+            return ParcelTrackingResult.from_api_response(cached)
+
         response = self._get(f"{BASE_TRACKING}/parcel", params=params)
+        if response.get("success") or response.get("status") == "success":
+            self._cache_set(cache_key, response)
         return ParcelTrackingResult.from_api_response(response)
 
     # ------------------------------------------------------------------
